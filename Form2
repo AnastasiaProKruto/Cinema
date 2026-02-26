@@ -1,0 +1,326 @@
+using System;
+using System.Data.SqlClient;
+using System.Drawing;
+using System.Windows.Forms;
+
+namespace Cinema
+{
+public partial class Form2 : Form
+{
+string connectionString = @"Server=KRN-20-202-C13;Database=Cinema1;Trusted_Connection=True";
+string resFolder = System.IO.Path.Combine(Application.StartupPath, "Res");
+int _role;
+int _userId;
+
+    public Form2(int role, string fio, int userId)
+    {
+        InitializeComponent();
+        _role = role;
+        _userId = userId;
+
+        label1.Text = fio;
+
+        // Кнопки только для администратора
+        btnAdd.Visible = btnEdit.Visible = btnDelete.Visible = (_role == 1);
+
+        txtSearch.TextChanged += (s, e) => LoadMovies();
+        cmbGenre.SelectedIndexChanged += (s, e) => LoadMovies();
+        cmbSort.SelectedIndexChanged += (s, e) => LoadMovies();
+        cmbAge.SelectedIndexChanged += (s, e) => LoadMovies();
+
+        btnAdd.Click += btnAdd_Click;
+        btnEdit.Click += btnEdit_Click;
+        btnDelete.Click += btnDelete_Click;
+        btnSessions.Click += btnSessions_Click;
+        btnOrders.Click += btnOrders_Click;
+        btnExit.Click += btnExit_Click;
+
+        // Placeholder для поиска
+        txtSearch.Enter += (s, e) =>
+        {
+            if (txtSearch.Text == "Поиск по названию...") txtSearch.Text = "";
+        };
+        txtSearch.Leave += (s, e) =>
+        {
+            if (txtSearch.Text.Trim() == "") txtSearch.Text = "Поиск по названию...";
+        };
+
+        // Устанавливаем начальные значения
+        cmbGenre.SelectedIndex = 0;
+        cmbSort.SelectedIndex = 0;
+        cmbAge.SelectedIndex = 0;
+
+        LoadMovies();
+    }
+
+    public void LoadMovies()
+    {
+        flowLayoutPanel1.Controls.Clear();
+        flowLayoutPanel1.Tag = null;
+
+        string search = (txtSearch.Text == "Поиск по названию...") ? "" : txtSearch.Text.Trim();
+        string genre = (cmbGenre.SelectedIndex <= 0) ? "" : cmbGenre.SelectedItem.ToString();
+        string age = (cmbAge.SelectedIndex <= 0) ? "" : cmbAge.SelectedItem.ToString();
+
+        using (SqlConnection con = new SqlConnection(connectionString))
+        {
+            try
+            {
+                con.Open();
+
+                string sql = @"
+                    SELECT
+                        m.Id,
+                        m.Title,
+                        m.AgeLimit,
+                        m.Duration,
+                        m.Release,
+                        m.Poster,
+                        g.Name AS GenreName,
+                        d.Name AS DirectorName,
+                        MIN(s.Price) AS MinPrice
+                    FROM movie m
+                    LEFT JOIN Genre g ON m.GenreId = g.Id
+                    LEFT JOIN Director d ON m.DirectorId = d.Id
+                    LEFT JOIN Session s ON m.Id = s.MovieId
+                    WHERE m.Title LIKE @search";
+
+                if (!string.IsNullOrEmpty(genre)) sql += " AND g.Name = @genre";
+                if (!string.IsNullOrEmpty(age)) sql += " AND m.AgeLimit = @age";
+
+                sql += @" GROUP BY
+                        m.Id, m.Title, m.AgeLimit, m.Duration,
+                        m.Release, m.Poster, g.Name, d.Name";
+
+                if (cmbSort.SelectedIndex == 1) sql += " ORDER BY MinPrice DESC";
+                else if (cmbSort.SelectedIndex == 2) sql += " ORDER BY MinPrice ASC";
+
+                SqlCommand cmd = new SqlCommand(sql, con);
+                cmd.Parameters.AddWithValue("@search", "%" + search + "%");
+                if (!string.IsNullOrEmpty(genre)) cmd.Parameters.AddWithValue("@genre", genre);
+                if (!string.IsNullOrEmpty(age)) cmd.Parameters.AddWithValue("@age", age);
+
+                using (SqlDataReader r = cmd.ExecuteReader())
+                {
+                    while (r.Read())
+                    {
+                        var card = new UserControl1();
+                        card.ResFolder = resFolder;
+
+                        decimal price = (r["MinPrice"] != DBNull.Value)
+                            ? Convert.ToDecimal(r["MinPrice"]) : 0;
+
+                        card.FillData(
+                            r["Title"].ToString(),
+                            r["AgeLimit"].ToString(),
+                            (r["Duration"] != DBNull.Value) ? Convert.ToInt32(r["Duration"]) : 0,
+                            (r["GenreName"] != DBNull.Value) ? r["GenreName"].ToString() : "—",
+                            price,
+                            (r["Poster"] != DBNull.Value) ? r["Poster"].ToString() : ""
+                        );
+
+                        // Устанавливаем Tag и свойства ДО того, как добавим обработчики
+                        int movieId = Convert.ToInt32(r["Id"]);
+                        card.Tag = movieId;
+                        card.MovieId = movieId;
+                        card.MovieTitle = r["Title"].ToString();
+                        card.MoviePrice = price;
+
+                        //  обработчики клика для выделения карточки
+                        card.Click += Card_Click;
+                        foreach (Control child in card.Controls)
+                        {
+                            child.Click += Card_Click;
+                        }
+
+                        flowLayoutPanel1.Controls.Add(card);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show("Ошибка загрузки фильмов:\n" + ex.Message, "Ошибка",
+                    MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+    }
+
+    private void Card_Click(object sender, EventArgs e)
+    {
+        Control clicked = sender as Control;
+        while (clicked != null && !(clicked is UserControl1))
+            clicked = clicked.Parent;
+
+        if (clicked != null)
+        {
+            foreach (Control ct in flowLayoutPanel1.Controls)
+                ct.BackColor = Color.White;
+            clicked.BackColor = Color.LightGray;
+            flowLayoutPanel1.Tag = clicked.Tag;
+        }
+    }
+
+    private void OpenEdit(int? id)
+    {
+        if (Application.OpenForms["Form3"] != null) return;
+        Form3 f = new Form3(id);
+        if (f.ShowDialog() == DialogResult.OK) LoadMovies();
+    }
+
+    private void ShowSessionsDialog(int movieId)
+    {
+        using (SqlConnection con = new SqlConnection(connectionString))
+        {
+            try
+            {
+                con.Open();
+
+                SqlCommand cmd = new SqlCommand(@"
+                    SELECT
+                        s.StartTime,
+                        s.Price,
+                        h.Name AS HallName,
+                        h.SeatsCount AS Seats
+                    FROM Session s
+                    JOIN Hall h ON s.HallId = h.Id
+                    WHERE s.MovieId = @id
+                    ORDER BY s.StartTime", con);
+                cmd.Parameters.AddWithValue("@id", movieId);
+
+                SqlDataReader r = cmd.ExecuteReader();
+                string info = "";
+                bool found = false;
+
+                while (r.Read())
+                {
+                    found = true;
+                    DateTime dt = Convert.ToDateTime(r["StartTime"]);
+                    decimal price = Convert.ToDecimal(r["Price"]);
+                    string hall = r["HallName"].ToString();
+                    int seats = (r["Seats"] != DBNull.Value) ? Convert.ToInt32(r["Seats"]) : 0;
+
+                    info += $"Дата: {dt:dd.MM.yyyy} Время: {dt:HH:mm}\n" +
+                            $"Зал: {hall} ({seats} мест)\n" +
+                            $"Цена: {price:N2} руб.\n" +
+                            $"──────────────────────────\n";
+                }
+
+                if (!found)
+                    info = "Сеансов для этого фильма пока нет.";
+
+                MessageBox.Show(info, "Сеансы фильма",
+                    MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show("Ошибка загрузки сеансов:\n" + ex.Message);
+            }
+        }
+    }
+
+    //  для открытия формы покупки билета
+    public void OpenBuyForm(int movieId, string movieTitle)
+    {
+        if (_userId == 0) // Гость
+        {
+            MessageBox.Show("Для покупки билетов необходимо авторизоваться!", "Внимание",
+                MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+
+        // Проверяем, есть ли сеансы у фильма
+        using (SqlConnection con = new SqlConnection(connectionString))
+        {
+            try
+            {
+                con.Open();
+                SqlCommand cmd = new SqlCommand("SELECT COUNT(*) FROM Session WHERE MovieId = @id AND StartTime > GETDATE()", con);
+                cmd.Parameters.AddWithValue("@id", movieId);
+                int sessionCount = (int)cmd.ExecuteScalar();
+
+                if (sessionCount == 0)
+                {
+                    MessageBox.Show("У этого фильма нет доступных сеансов!", "Внимание",
+                        MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show("Ошибка проверки сеансов: " + ex.Message);
+                return;
+            }
+        }
+
+        Form5 buyForm = new Form5(movieId, movieTitle, _userId);
+        if (buyForm.ShowDialog() == DialogResult.OK)
+        {
+            MessageBox.Show("Билет успешно приобретен! Статус заказа - Ожидание",
+                "Успех", MessageBoxButtons.OK, MessageBoxIcon.Information);
+        }
+    }
+
+    private void btnAdd_Click(object sender, EventArgs e) => OpenEdit(null);
+
+    private void btnEdit_Click(object sender, EventArgs e)
+    {
+        if (flowLayoutPanel1.Tag is int id) OpenEdit(id);
+        else MessageBox.Show("Выберите фильм!");
+    }
+
+    private void btnDelete_Click(object sender, EventArgs e)
+    {
+        if (!(flowLayoutPanel1.Tag is int id)) return;
+
+        if (MessageBox.Show("Удалить выбранный фильм?", "Удаление",
+            MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes)
+        {
+            using (SqlConnection con = new SqlConnection(connectionString))
+            {
+                try
+                {
+                    con.Open();
+                    // Сначала удаляем билеты, потом сеансы, потом фильм
+                    new SqlCommand($"DELETE FROM Ticket WHERE SessionId IN (SELECT Id FROM Session WHERE MovieId={id})", con).ExecuteNonQuery();
+                    new SqlCommand($"DELETE FROM Session WHERE MovieId = {id}", con).ExecuteNonQuery();
+                    new SqlCommand($"DELETE FROM movie WHERE Id = {id}", con).ExecuteNonQuery();
+                    LoadMovies();
+                }
+                catch (Exception ex) { MessageBox.Show(ex.Message); }
+            }
+        }
+    }
+
+    private void btnSessions_Click(object sender, EventArgs e)
+    {
+        if (flowLayoutPanel1.Tag is int id)
+            ShowSessionsDialog(id);
+        else
+            MessageBox.Show("Сначала выберите фильм!", "Внимание");
+    }
+
+    private void btnOrders_Click(object sender, EventArgs e)
+    {
+        if (_userId == 0) // Гость
+        {
+            MessageBox.Show("Для просмотра заказов необходимо авторизоваться!", "Внимание",
+                MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+
+        Form4 ordersForm = new Form4(_userId, _role);
+        ordersForm.ShowDialog();
+    }
+
+    private void btnExit_Click(object sender, EventArgs e)
+    {
+        new Form1().Show();
+        this.Close();
+    }
+
+    private void Form2_Load(object sender, EventArgs e)
+    {
+
+    }
+}
+}
