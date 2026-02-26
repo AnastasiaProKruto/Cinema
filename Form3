@@ -1,0 +1,337 @@
+using System;
+using System.Data.SqlClient;
+using System.Drawing;
+using System.IO;
+using System.Windows.Forms;
+
+namespace Cinema
+{
+    public partial class Form3 : Form
+    {
+        string connectionString = @"Server=KRN-20-202-C13;Database=Cinema1;Trusted_Connection=True";
+        string resFolder = System.IO.Path.Combine(Application.StartupPath, "Res");
+        int? _id;
+        string _posterPath = "";
+
+        public Form3(int? id)
+        {
+            InitializeComponent();
+            _id = id;
+
+            // Устанавливаем заголовок
+            label9.Text = (_id == null) ? "Добавление фильма" : "Редактирование фильма";
+
+            // Подписываемся на события кнопок
+            this.button1.Click += new EventHandler(button1_Click); // НАЗАД
+            this.button2.Click += new EventHandler(button2_Click); // СОХРАНИТЬ
+
+            // Настраиваем PictureBox
+            pictureBox1.Click += new EventHandler(pictureBox1_Click);
+            pictureBox1.Cursor = Cursors.Hand;
+            pictureBox1.SizeMode = PictureBoxSizeMode.Zoom;
+
+            // Если редактируем существующий фильм - загружаем данные
+            if (_id != null)
+            {
+                LoadMovieData();
+            }
+        }
+
+        // Загружаем данные фильма для редактирования
+        private void LoadMovieData()
+        {
+            using (SqlConnection c = new SqlConnection(connectionString))
+            {
+                try
+                {
+                    c.Open();
+                    SqlCommand cmd = new SqlCommand(@"
+                        SELECT
+                            m.Title, m.Duration, m.Release,
+                            m.AgeLimit, m.Description, m.Poster,
+                            g.Name AS GenreName,
+                            d.Name AS DirectorName,
+                            (SELECT TOP 1 Price FROM Session WHERE MovieId = m.Id ORDER BY StartTime) AS Price,
+                            (SELECT TOP 1 StartTime FROM Session WHERE MovieId = m.Id ORDER BY StartTime) AS NextDate,
+                            (SELECT TOP 1 h.Name FROM Session ss
+                             JOIN Hall h ON ss.HallId = h.Id
+                             WHERE ss.MovieId = m.Id
+                             ORDER BY ss.StartTime) AS HallName
+                        FROM movie m
+                        LEFT JOIN Genre    g ON m.GenreId    = g.Id
+                        LEFT JOIN Director d ON m.DirectorId = d.Id
+                        WHERE m.Id = @id", c);
+                    cmd.Parameters.AddWithValue("@id", _id);
+
+                    SqlDataReader r = cmd.ExecuteReader();
+                    if (r.Read())
+                    {
+                        textBox7.Text = r["Title"].ToString();
+                        comboBox1.Text = (r["GenreName"] != DBNull.Value) ? r["GenreName"].ToString() : "";
+                        textBox1.Text = (r["DirectorName"] != DBNull.Value) ? r["DirectorName"].ToString() : "";
+                        textBox2.Text = r["AgeLimit"].ToString();
+                        textBox3.Text = r["Duration"].ToString();
+                        textBox4.Text = r["Description"].ToString();
+                        textBox5.Text = r["Release"].ToString();
+                        textBox6.Text = (r["Price"] != DBNull.Value)
+                            ? Convert.ToDecimal(r["Price"]).ToString() : "0";
+
+                        // Показываем информацию о ближайшем сеансе и зале
+                        if (r["NextDate"] != DBNull.Value)
+                        {
+                            DateTime dt = Convert.ToDateTime(r["NextDate"]);
+                            lblSessionInfo.Text = "Ближайший сеанс: " + dt.ToString("dd.MM.yyyy HH:mm") +
+                                "\nЗал: " + (r["HallName"] != DBNull.Value ? r["HallName"].ToString() : "—");
+                        }
+                        else
+                        {
+                            lblSessionInfo.Text = "Сеансов нет";
+                        }
+
+                        _posterPath = (r["Poster"] != DBNull.Value) ? r["Poster"].ToString() : "";
+                        LoadPoster(_posterPath);
+                    }
+                    r.Close();
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show("Ошибка загрузки:\n" + ex.Message, "Ошибка",
+                        MessageBoxButtons.OK, MessageBoxIcon.Error);
+                }
+            }
+        }
+
+        // Клик по PictureBox - выбор постера
+        private void pictureBox1_Click(object sender, EventArgs e)
+        {
+            OpenFileDialog ofd = new OpenFileDialog
+            {
+                Title = "Выберите постер",
+                Filter = "Изображения|*.png;*.jpg;*.jpeg;*.bmp",
+                InitialDirectory = Directory.Exists(resFolder) ? resFolder : Application.StartupPath
+            };
+            if (ofd.ShowDialog() == DialogResult.OK)
+            {
+                _posterPath = ofd.FileName;
+                LoadPoster(_posterPath);
+            }
+        }
+
+        // Загрузка постера
+        private void LoadPoster(string path)
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(path)) { pictureBox1.Image = null; return; }
+
+                string[] candidates = new string[]
+                {
+                    path,
+                    Path.Combine(Application.StartupPath, "Res", Path.GetFileName(path)),
+                    Path.Combine(resFolder, Path.GetFileName(path)),
+                    Path.Combine(Application.StartupPath, path.Trim())
+                };
+
+                foreach (string p in candidates)
+                {
+                    if (!string.IsNullOrEmpty(p) && File.Exists(p))
+                    {
+                        pictureBox1.Image = Image.FromFile(p);
+                        return;
+                    }
+                }
+                pictureBox1.Image = null;
+            }
+            catch { pictureBox1.Image = null; }
+        }
+
+        // Кнопка СОХРАНИТЬ
+        private void button2_Click(object sender, EventArgs e)
+        {
+            // Валидация полей
+            if (string.IsNullOrWhiteSpace(textBox7.Text))
+            { MessageBox.Show("Введите название фильма!", "Внимание"); return; }
+
+            if (string.IsNullOrWhiteSpace(comboBox1.Text))
+            { MessageBox.Show("Выберите жанр!", "Внимание"); return; }
+
+            if (string.IsNullOrWhiteSpace(textBox1.Text))
+            { MessageBox.Show("Введите режиссёра!", "Внимание"); return; }
+
+            int duration = 0;
+            if (!int.TryParse(textBox3.Text, out duration) || duration <= 0)
+            { MessageBox.Show("Введите длительность (число минут)!", "Внимание"); return; }
+
+            int releaseYear = 0;
+            if (!int.TryParse(textBox5.Text, out releaseYear) || releaseYear < 1900 || releaseYear > DateTime.Now.Year + 5)
+            { MessageBox.Show("Введите корректный год выхода!", "Внимание"); return; }
+
+            using (SqlConnection c = new SqlConnection(connectionString))
+            {
+                try
+                {
+                    c.Open();
+
+                    // Получаем или создаем ID для жанра и режиссера
+                    int genreId = GetOrCreateId(c, "Genre", comboBox1.Text.Trim());
+                    int directorId = GetOrCreateId(c, "Director", textBox1.Text.Trim());
+
+                    if (_id == null)
+                    {
+                        // Добавление нового фильма
+                        int newMovieId = GetNextId(c, "movie");
+                        SqlCommand ins = new SqlCommand(@"
+                            INSERT INTO movie
+                                (Id, Title, DirectorId, GenreId, Duration, Release, AgeLimit, Description, Poster)
+                            VALUES
+                                (@newId, @title, @dir, @genre, @dur, @rel, @age, @desc, @poster)", c);
+                        ins.Parameters.AddWithValue("@newId", newMovieId);
+                        ins.Parameters.AddWithValue("@title", textBox7.Text.Trim());
+                        ins.Parameters.AddWithValue("@dir", directorId);
+                        ins.Parameters.AddWithValue("@genre", genreId);
+                        ins.Parameters.AddWithValue("@dur", duration);
+                        ins.Parameters.AddWithValue("@rel", releaseYear);
+                        ins.Parameters.AddWithValue("@age", textBox2.Text.Trim());
+                        ins.Parameters.AddWithValue("@desc", textBox4.Text.Trim());
+                        ins.Parameters.AddWithValue("@poster", _posterPath);
+                        ins.ExecuteNonQuery();
+
+                        // Создаем сеансы из TextBox
+                        if (!string.IsNullOrWhiteSpace(txtSessionManagement.Text))
+                        {
+                            CreateSessionsFromText(c, newMovieId, txtSessionManagement.Text);
+                        }
+
+                        MessageBox.Show("Фильм успешно добавлен!", "Успех",
+                            MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    }
+                    else
+                    {
+                        // Редактирование существующего фильма
+                        SqlCommand upd = new SqlCommand(@"
+                            UPDATE movie SET
+                                Title = @title,
+                                DirectorId = @dir,
+                                GenreId = @genre,
+                                Duration = @dur,
+                                Release = @rel,
+                                AgeLimit = @age,
+                                Description = @desc,
+                                Poster = @poster
+                            WHERE Id = @id", c);
+                        upd.Parameters.AddWithValue("@title", textBox7.Text.Trim());
+                        upd.Parameters.AddWithValue("@dir", directorId);
+                        upd.Parameters.AddWithValue("@genre", genreId);
+                        upd.Parameters.AddWithValue("@dur", duration);
+                        upd.Parameters.AddWithValue("@rel", releaseYear);
+                        upd.Parameters.AddWithValue("@age", textBox2.Text.Trim());
+                        upd.Parameters.AddWithValue("@desc", textBox4.Text.Trim());
+                        upd.Parameters.AddWithValue("@poster", _posterPath);
+                        upd.Parameters.AddWithValue("@id", _id);
+                        upd.ExecuteNonQuery();
+
+                        // Создаем новые сеансы из TextBox
+                        if (!string.IsNullOrWhiteSpace(txtSessionManagement.Text) &&
+                            txtSessionManagement.Text != "Введите сеансы в формате:\r\nЗал;Дата;Время;Цена\r\n1;25.02.2026;18:30;350\r\n2;25.02.2026;21:00;400")
+                        {
+                            CreateSessionsFromText(c, _id.Value, txtSessionManagement.Text);
+                        }
+
+                        MessageBox.Show("Фильм успешно обновлен!", "Успех",
+                            MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    }
+
+                    this.DialogResult = DialogResult.OK;
+                    this.Close();
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show("Ошибка сохранения:\n" + ex.Message, "Ошибка",
+                        MessageBoxButtons.OK, MessageBoxIcon.Error);
+                }
+            }
+        }
+
+        // Создание сеансов из текста
+        private void CreateSessionsFromText(SqlConnection c, int movieId, string text)
+        {
+            string[] lines = text.Split(new[] { '\n', '\r' }, StringSplitOptions.RemoveEmptyEntries);
+
+            foreach (string line in lines)
+            {
+                // Пропускаем строки-подсказки
+                if (line.StartsWith("Введите") || line.StartsWith("Зал;Дата")) continue;
+
+                string[] parts = line.Split(';');
+                if (parts.Length >= 4)
+                {
+                    try
+                    {
+                        int hallId = int.Parse(parts[0].Trim());
+                        DateTime date = DateTime.Parse(parts[1].Trim() + " " + parts[2].Trim());
+                        decimal price = decimal.Parse(parts[3].Trim().Replace('.', ','));
+
+                        // Проверяем, нет ли уже такого сеанса
+                        SqlCommand checkCmd = new SqlCommand(@"
+                            SELECT COUNT(*) FROM Session 
+                            WHERE MovieId = @movieId AND HallId = @hallId AND StartTime = @time", c);
+                        checkCmd.Parameters.AddWithValue("@movieId", movieId);
+                        checkCmd.Parameters.AddWithValue("@hallId", hallId);
+                        checkCmd.Parameters.AddWithValue("@time", date);
+
+                        int exists = (int)checkCmd.ExecuteScalar();
+
+                        if (exists == 0)
+                        {
+                            int newSessionId = GetNextId(c, "Session");
+                            SqlCommand cmd = new SqlCommand(@"
+                                INSERT INTO Session (Id, MovieId, HallId, StartTime, Price)
+                                VALUES (@id, @movieId, @hallId, @time, @price)", c);
+                            cmd.Parameters.AddWithValue("@id", newSessionId);
+                            cmd.Parameters.AddWithValue("@movieId", movieId);
+                            cmd.Parameters.AddWithValue("@hallId", hallId);
+                            cmd.Parameters.AddWithValue("@time", date);
+                            cmd.Parameters.AddWithValue("@price", price);
+                            cmd.ExecuteNonQuery();
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        MessageBox.Show($"Ошибка в строке: {line}\n{ex.Message}", "Ошибка формата");
+                    }
+                }
+            }
+        }
+
+        // Кнопка НАЗАД
+        private void button1_Click(object sender, EventArgs e)
+        {
+            this.Close();
+        }
+
+        // Получить следующий ID для таблицы
+        private int GetNextId(SqlConnection c, string tableName)
+        {
+            SqlCommand cmd = new SqlCommand($"SELECT ISNULL(MAX(Id), 0) + 1 FROM [{tableName}]", c);
+            return Convert.ToInt32(cmd.ExecuteScalar());
+        }
+
+        // Получить или создать ID для справочника
+        private int GetOrCreateId(SqlConnection c, string tableName, string name)
+        {
+            if (string.IsNullOrWhiteSpace(name)) name = "Не указано";
+
+            SqlCommand sel = new SqlCommand($"SELECT Id FROM [{tableName}] WHERE Name = @n", c);
+            sel.Parameters.AddWithValue("@n", name);
+            object res = sel.ExecuteScalar();
+            if (res != null && res != DBNull.Value) return Convert.ToInt32(res);
+
+            int newId = GetNextId(c, tableName);
+            SqlCommand ins = new SqlCommand($"INSERT INTO [{tableName}] (Id, Name) VALUES (@id, @n)", c);
+            ins.Parameters.AddWithValue("@id", newId);
+            ins.Parameters.AddWithValue("@n", name);
+            ins.ExecuteNonQuery();
+            return newId;
+        }
+    }
+}
