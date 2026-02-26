@@ -1,0 +1,113 @@
+using System;
+using System.Data.SqlClient;
+using System.Windows.Forms;
+
+namespace Cinema
+{
+public partial class Form1 : Form
+{
+string connectionString = @"Server=KRN-20-202-C13;Database=Cinema1;Trusted_Connection=True";
+    public Form1()
+    {
+        InitializeComponent();
+        this.button1.Click += new EventHandler(button1_Click);
+        this.button2.Click += new EventHandler(button2_Click);
+    }
+
+    private void label1_Click(object sender, EventArgs e) { }
+
+    private void button1_Click(object sender, EventArgs e)
+    {
+        if (string.IsNullOrWhiteSpace(textBox1.Text) || string.IsNullOrWhiteSpace(textBox2.Text))
+        {
+            MessageBox.Show("Введите логин и пароль!", "Внимание",
+                MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+
+        string[] connectionStrings = new string[]
+        {
+            @"Server=KRN-20-202-C13;Database=Cinema1;Trusted_Connection=True",
+            @"Server=KRN-20-202-C13;Database=Cinema1;Integrated Security=True",
+            @"Data Source=KRN-20-202-C13;Database=Cinema1;Integrated Security=True",
+            @"Server=KRN-20-202-C13;Database=Cinema1;Trusted_Connection=True",
+            @"Server=KRN-20-202-C13;Database=Cinema1;Trusted_Connection=True",
+        };
+
+        SqlConnection workingConn = null;
+        string workingCS = "";
+
+        foreach (string cs in connectionStrings)
+        {
+            try
+            {
+                SqlConnection testConn = new SqlConnection(cs);
+                testConn.Open();
+                new SqlCommand("SELECT TOP 1 Id FROM [User]", testConn).ExecuteScalar();
+                workingConn = testConn;
+                workingCS = cs;
+                break;
+            }
+            catch { }
+        }
+
+        if (workingConn == null)
+        {
+            MessageBox.Show(
+                "Не удалось подключиться к БД!\n\n" +
+                "Проверьте:\n" +
+                "1. Открыт ли SQL Server Object Explorer в VS\n" +
+                "2. Правильно ли называется БД (Cinema)\n" +
+                "3. Запущен ли SQL LocalDB",
+                "Ошибка подключения", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            return;
+        }
+
+        connectionString = workingCS;
+
+        try
+        {
+            SqlCommand cmd = new SqlCommand(
+                "SELECT Id, RoleId, Surname, Name, Patronymic FROM [User] WHERE Login = @log AND Password = @pass",
+                workingConn);
+            cmd.Parameters.AddWithValue("@log", textBox1.Text.Trim());
+            cmd.Parameters.AddWithValue("@pass", textBox2.Text.Trim());
+
+            SqlDataReader reader = cmd.ExecuteReader();
+
+            if (reader.Read())
+            {
+                int userId = Convert.ToInt32(reader["Id"]); // Получаем ID пользователя
+                int roleId = Convert.ToInt32(reader["RoleId"]);
+                string fio = $"{reader["Surname"]} {reader["Name"]} {reader["Patronymic"]}";
+                reader.Close();
+                workingConn.Close();
+
+                Form2 f2 = new Form2(roleId, fio, userId); // Передаем userId
+                f2.Show();
+                this.Hide();
+            }
+            else
+            {
+                reader.Close();
+                workingConn.Close();
+                MessageBox.Show("Неверный логин или пароль!", "Ошибка",
+                    MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+        catch (Exception ex)
+        {
+            workingConn?.Close();
+            MessageBox.Show("Ошибка запроса:\n" + ex.Message, "Ошибка",
+                MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+    }
+
+    private void button2_Click(object sender, EventArgs e)
+    {
+        // Для гостя создаем userId = 0 (или можно создать специального гостевого пользователя)
+        Form2 f2 = new Form2(3, "Гость", 0); // Передаем userId = 0 для гостя
+        f2.Show();
+        this.Hide();
+    }
+}
