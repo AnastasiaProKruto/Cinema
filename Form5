@@ -1,0 +1,228 @@
+using System;
+using System.Data.SqlClient;
+using System.Windows.Forms;
+
+namespace Cinema
+{
+public partial class Form5 : Form
+{
+string connectionString = @"Server=KRN-20-202-C13;Database=Cinema1;Trusted_Connection=True";
+int _movieId;
+int _userId;
+string _movieTitle;
+int _selectedSessionId;
+int _selectedSeatId;
+decimal _selectedPrice;
+
+    public Form5(int movieId, string movieTitle, int userId)
+    {
+        InitializeComponent();
+        _movieId = movieId;
+        _movieTitle = movieTitle;
+        _userId = userId;
+
+        lblMovieTitle.Text = movieTitle;
+        LoadSessions();
+    }
+
+    private void LoadSessions()
+    {
+        cmbSession.Items.Clear();
+
+        using (SqlConnection conn = new SqlConnection(connectionString))
+        {
+            try
+            {
+                conn.Open();
+                string sql = @"
+                    SELECT s.Id, s.StartTime, s.Price, h.Name as HallName
+                    FROM Session s
+                    JOIN Hall h ON s.HallId = h.Id
+                    WHERE s.MovieId = @movieId AND s.StartTime > GETDATE()
+                    ORDER BY s.StartTime";
+
+                SqlCommand cmd = new SqlCommand(sql, conn);
+                cmd.Parameters.AddWithValue("@movieId", _movieId);
+
+                SqlDataReader r = cmd.ExecuteReader();
+                while (r.Read())
+                {
+                    int sessionId = Convert.ToInt32(r["Id"]);
+                    DateTime time = Convert.ToDateTime(r["StartTime"]);
+                    decimal price = Convert.ToDecimal(r["Price"]);
+                    string hall = r["HallName"].ToString();
+
+                    string displayText = $"{time:dd.MM.yyyy HH:mm} - {hall} - {price:N2} руб.";
+                    cmbSession.Items.Add(new ComboboxItem(displayText, sessionId, price));
+                }
+                r.Close();
+
+                if (cmbSession.Items.Count > 0)
+                    cmbSession.SelectedIndex = 0;
+                else
+                    MessageBox.Show("Нет доступных сеансов для этого фильма");
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show("Ошибка загрузки сеансов: " + ex.Message);
+            }
+        }
+    }
+
+    private void cmbSession_SelectedIndexChanged(object sender, EventArgs e)
+    {
+        if (cmbSession.SelectedItem is ComboboxItem item)
+        {
+            _selectedSessionId = item.Value;
+            _selectedPrice = item.Price;
+            lblPrice.Text = _selectedPrice.ToString("N2") + " руб.";
+            LoadSeats();
+        }
+    }
+
+    private void LoadSeats()
+    {
+        cmbSeat.Items.Clear();
+
+        using (SqlConnection conn = new SqlConnection(connectionString))
+        {
+            try
+            {
+                conn.Open();
+
+                // Получаем все места в зале для этого сеанса
+                string sql = @"
+                    SELECT s.Id, s.RowNumber, s.SeatNumber
+                    FROM Seat s
+                    JOIN Session ses ON s.HallId = ses.HallId
+                    WHERE ses.Id = @sessionId
+                    AND s.Id NOT IN (
+                        SELECT SeatId FROM Ticket WHERE SessionId = @sessionId
+                    )
+                    ORDER BY s.RowNumber, s.SeatNumber";
+
+                SqlCommand cmd = new SqlCommand(sql, conn);
+                cmd.Parameters.AddWithValue("@sessionId", _selectedSessionId);
+
+                SqlDataReader r = cmd.ExecuteReader();
+                while (r.Read())
+                {
+                    int seatId = Convert.ToInt32(r["Id"]);
+                    int row = Convert.ToInt32(r["RowNumber"]);
+                    int seat = Convert.ToInt32(r["SeatNumber"]);
+
+                    string displayText = $"Ряд {row} Место {seat}";
+                    cmbSeat.Items.Add(new ComboboxItem(displayText, seatId, 0));
+                }
+                r.Close();
+
+                if (cmbSeat.Items.Count > 0)
+                    cmbSeat.SelectedIndex = 0;
+                else
+                    MessageBox.Show("На этот сеанс нет свободных мест");
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show("Ошибка загрузки мест: " + ex.Message);
+            }
+        }
+    }
+
+    private void btnBuy_Click(object sender, EventArgs e)
+    {
+        if (cmbSession.SelectedItem == null)
+        {
+            MessageBox.Show("Выберите сеанс!");
+            return;
+        }
+
+        if (cmbSeat.SelectedItem == null)
+        {
+            MessageBox.Show("Выберите место!");
+            return;
+        }
+
+        _selectedSeatId = ((ComboboxItem)cmbSeat.SelectedItem).Value;
+
+        using (SqlConnection conn = new SqlConnection(connectionString))
+        {
+            try
+            {
+                conn.Open();
+
+                // Получаем следующий ID для билета
+                SqlCommand cmd = new SqlCommand("SELECT ISNULL(MAX(id), 0) + 1 FROM Ticket", conn);
+                int newTicketId = Convert.ToInt32(cmd.ExecuteScalar());
+
+                // Получаем ID статуса "Ожидание"
+                cmd = new SqlCommand("SELECT Id FROM OrderStatus WHERE Name = 'Ожидание'", conn);
+                object statusIdObj = cmd.ExecuteScalar();
+
+                int statusId = 1; // значение по умолчанию
+                if (statusIdObj != null && statusIdObj != DBNull.Value)
+                {
+                    statusId = Convert.ToInt32(statusIdObj);
+                }
+
+                // Создаем билет - используем правильное название поля OrderStatusId
+                cmd = new SqlCommand(@"
+                    INSERT INTO Ticket (id, UserId, SessionId, SeatId, OrderDate, OrderStatusId)
+                    VALUES (@id, @userId, @sessionId, @seatId, GETDATE(), @statusId)", conn);
+
+                cmd.Parameters.AddWithValue("@id", newTicketId);
+                cmd.Parameters.AddWithValue("@userId", _userId);
+                cmd.Parameters.AddWithValue("@sessionId", _selectedSessionId);
+                cmd.Parameters.AddWithValue("@seatId", _selectedSeatId);
+                cmd.Parameters.AddWithValue("@statusId", statusId);
+
+                int rowsAffected = cmd.ExecuteNonQuery();
+
+                if (rowsAffected > 0)
+                {
+                    MessageBox.Show("Билет успешно куплен! Статус: Ожидание", "Успех");
+                    this.DialogResult = DialogResult.OK;
+                    this.Close();
+                }
+                else
+                {
+                    MessageBox.Show("Не удалось создать билет", "Ошибка");
+                }
+            }
+            catch (SqlException sqlEx)
+            {
+                MessageBox.Show("Ошибка SQL при покупке билета: " + sqlEx.Message + "\n\n" + sqlEx.StackTrace);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show("Ошибка покупки билета: " + ex.Message);
+            }
+        }
+    }
+
+    private void btnCancel_Click(object sender, EventArgs e)
+    {
+        this.DialogResult = DialogResult.Cancel;
+        this.Close();
+    }
+}
+
+// Вспомогательный класс для комбобокса
+public class ComboboxItem
+{
+    public string Text { get; set; }
+    public int Value { get; set; }
+    public decimal Price { get; set; }
+
+    public ComboboxItem(string text, int value, decimal price)
+    {
+        Text = text;
+        Value = value;
+        Price = price;
+    }
+
+    public override string ToString()
+    {
+        return Text;
+    }
+}
+}
