@@ -1,0 +1,79 @@
+using System;
+using System.Drawing;
+using System.IO;
+using System.Windows.Forms;
+
+namespace Cinema
+{
+public partial class UserControl1 : UserControl
+{
+public string ResFolder { get; set; } = System.IO.Path.Combine(Application.StartupPath, "Res");
+public int MovieId { get; set; } public
+decimal MoviePrice { get; set; }
+public string MovieTitle { get; set; }
+
+    public UserControl1()
+    {
+        InitializeComponent();
+    }
+
+    public void FillData(string title, string ageLimit, int duration,
+                         string genre, decimal price, string poster)
+    {
+        // Сохраняем данные
+        MovieTitle = title;
+        MoviePrice = price;
+
+        // Заполняем labels
+        lblTitle.Text = title;
+        lblAgeLimit.Text = "Возраст: " + ageLimit;
+        lblDuration.Text = "Длит.: " + duration + " мин.";
+        lblGenre.Text = "Жанр: " + genre;
+
+        // Если нет сеансов  MinPrice придёт как 0, показываем "Нет сеансов"
+        label1.Text = (price > 0)
+            ? "Цена от: " + price.ToString("N2") + " руб."
+            : "Нет сеансов";
+
+        // Делаем кнопку неактивной, если нет сеансов
+        btnBuy.Enabled = (price > 0);
+
+        pictureBox1.SizeMode = PictureBoxSizeMode.Zoom;
+        pictureBox1.Image = LoadImage(poster);
+    }
+
+    private Image LoadImage(string poster)
+    {
+        if (string.IsNullOrWhiteSpace(poster)) return null;
+
+        string[] candidates = new string[]
+        {
+            poster,
+            Path.Combine(Application.StartupPath, "Res", Path.GetFileName(poster)),
+            Path.Combine(ResFolder, Path.GetFileName(poster)),
+            Path.Combine(Application.StartupPath, poster.Trim()),
+        };
+
+        foreach (string path in candidates)
+        {
+            try
+            {
+                if (!string.IsNullOrEmpty(path) && File.Exists(path))
+                    return Image.FromFile(path);
+            }
+            catch { }
+        }
+        return null;
+    }
+
+    private void btnBuy_Click(object sender, EventArgs e)
+    {
+        // Находим родительскую форму Form2
+        Form2 parentForm = this.FindForm() as Form2;
+        if (parentForm != null)
+        {
+            parentForm.OpenBuyForm(MovieId, MovieTitle);
+        }
+    }
+}
+}
