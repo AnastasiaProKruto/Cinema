@@ -1,0 +1,229 @@
+using System;
+using System.Data.SqlClient;
+using System.Drawing;
+using System.Windows.Forms;
+
+namespace Cinema
+{
+public partial class Form4 : Form
+{
+string connectionString = @"Server=KRN-20-202-C13;Database=Cinema1;Trusted_Connection=True";
+int _userId;
+int _role;
+
+    public Form4(int userId, int role)
+    {
+        InitializeComponent();
+        _userId = userId;
+        _role = role;
+
+        this.button1.Click += new EventHandler(button1_Click); // Отменить
+        this.button2.Click += new EventHandler(button2_Click); // Назад
+        this.comboBox1.SelectedIndexChanged += new EventHandler(comboBox1_SelectedIndexChanged);
+
+        comboBox1.SelectedIndex = 0;
+        LoadOrders();
+    }
+
+    public void LoadOrders()
+    {
+        flowLayoutPanel1.Controls.Clear();
+        flowLayoutPanel1.Tag = null;
+        string statusFilter = comboBox1.SelectedItem.ToString();
+
+        using (SqlConnection conn = new SqlConnection(connectionString))
+        {
+            try
+            {
+                conn.Open();
+
+                string sql = @"
+                    SELECT 
+                        t.id AS TicketId,
+                        ISNULL(os.Name, 'Неизвестно') AS StatusName,
+                        m.Title AS MovieTitle,
+                        s.Price,
+                        s.StartTime AS SessionTime,
+                        h.Name AS HallName,
+                        seat.RowNumber,
+                        seat.SeatNumber,
+                        t.OrderDate,
+                        t.OrderStatusId
+                    FROM Ticket t
+                    LEFT JOIN [User] u ON t.UserId = u.Id
+                    LEFT JOIN Session s ON t.SessionId = s.Id
+                    LEFT JOIN movie m ON s.MovieId = m.Id
+                    LEFT JOIN Hall h ON s.HallId = h.Id
+                    LEFT JOIN Seat seat ON t.SeatId = seat.Id
+                    LEFT JOIN OrderStatus os ON t.OrderStatusId = os.Id";
+
+                // Формируем WHERE условие
+                string whereClause = "";
+
+                if (_role != 1 && _userId > 0) // обычный пользователь
+                {
+                    whereClause = " WHERE u.Id = " + _userId;
+                }
+                else if (_userId == 0) // гость
+                {
+                    whereClause = " WHERE 1=0"; // не показываем ничего гостю
+                }
+
+                if (statusFilter != "Все заказы")
+                {
+                    if (string.IsNullOrEmpty(whereClause))
+                        whereClause = " WHERE os.Name = '" + statusFilter + "'";
+                    else
+                        whereClause += " AND os.Name = '" + statusFilter + "'";
+                }
+
+                sql += whereClause + " ORDER BY t.OrderDate DESC";
+
+                SqlCommand cmd = new SqlCommand(sql, conn);
+                SqlDataReader r = cmd.ExecuteReader();
+
+                while (r.Read())
+                {
+                    Ticket ticket = new Ticket();
+
+                    string seatInfo = $"Ряд {r["RowNumber"]} Место {r["SeatNumber"]} (Зал: {r["HallName"]})";
+                    DateTime sessionTime = Convert.ToDateTime(r["SessionTime"]);
+                    DateTime orderDate = Convert.ToDateTime(r["OrderDate"]);
+                    decimal price = Convert.ToDecimal(r["Price"]);
+                    string status = r["StatusName"]?.ToString() ?? "Неизвестно";
+                    string movieTitle = r["MovieTitle"].ToString();
+
+                    ticket.Fill(
+                        movieTitle,
+                        status,
+                        seatInfo,
+                        sessionTime,
+                        price,
+                        orderDate
+                    );
+
+                    ticket.Tag = r["TicketId"];
+                    ticket.TicketId = Convert.ToInt32(r["TicketId"]);
+
+                    // Добавляем обработчик клика для выбора заказа
+                    ticket.Click += Ticket_Click;
+                    foreach (Control c in ticket.Controls)
+                    {
+                        c.Click += Ticket_Click;
+                    }
+
+                    flowLayoutPanel1.Controls.Add(ticket);
+                }
+                r.Close();
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show("Ошибка БД: " + ex.Message);
+            }
+        }
+    }
+
+    // Обработчик клика по билету  выделение выбранного заказа
+    private void Ticket_Click(object sender, EventArgs e)
+    {
+        Control clicked = sender as Control;
+        while (clicked != null && !(clicked is Ticket))
+            clicked = clicked.Parent;
+
+        if (clicked != null)
+        {
+            // Снимаем выделение со всех заказов
+            foreach (Control ct in flowLayoutPanel1.Controls)
+            {
+                ct.BackColor = Color.Transparent;
+            }
+
+            // Выделяем выбранный заказ
+            clicked.BackColor = Color.LightBlue;
+            flowLayoutPanel1.Tag = clicked.Tag; // Сохраняем ID выбранного заказа
+        }
+    }
+
+    private void button1_Click(object sender, EventArgs e)
+    {
+        // Отмена выбранного заказа
+        if (flowLayoutPanel1.Tag == null)
+        {
+            MessageBox.Show("Выберите заказ для отмены!", "Внимание");
+            return;
+        }
+
+        int ticketId = (int)flowLayoutPanel1.Tag;
+
+        DialogResult result = MessageBox.Show("Отменить выбранный заказ?", "Подтверждение",
+            MessageBoxButtons.YesNo, MessageBoxIcon.Question);
+
+        if (result == DialogResult.Yes)
+        {
+            using (SqlConnection conn = new SqlConnection(connectionString))
+            {
+                try
+                {
+                    conn.Open();
+
+                    // ПРОВЕРКА: смотрим какие статусы есть в БД
+                    SqlCommand checkCmd = new SqlCommand("SELECT Id, Name FROM OrderStatus", conn);
+                    SqlDataReader reader = checkCmd.ExecuteReader();
+
+                    Console.WriteLine("Доступные статусы:");
+                    int cancelledStatusId = 4; // по умолчанию
+
+                    while (reader.Read())
+                    {
+                        int id = Convert.ToInt32(reader["Id"]);
+                        string name = reader["Name"].ToString();
+                        Console.WriteLine($"ID: {id}, Name: {name}");
+
+                        if (name == "Отменен")
+                        {
+                            cancelledStatusId = id;
+                        }
+                    }
+                    reader.Close();
+
+                    // Если нашли статус "Отменен", обновляем билет
+                    SqlCommand cmd = new SqlCommand("UPDATE Ticket SET OrderStatusId = @statusId WHERE id = @ticketId", conn);
+                    cmd.Parameters.AddWithValue("@statusId", cancelledStatusId);
+                    cmd.Parameters.AddWithValue("@ticketId", ticketId);
+
+                    int rowsAffected = cmd.ExecuteNonQuery();
+
+                    if (rowsAffected > 0)
+                    {
+                        MessageBox.Show("Заказ успешно отменен!", "Успех");
+                        LoadOrders(); // Перезагружаем список
+                        flowLayoutPanel1.Tag = null;
+                    }
+                    else
+                    {
+                        MessageBox.Show("Не удалось отменить заказ", "Ошибка");
+                    }
+                }
+                catch (SqlException sqlEx)
+                {
+                    MessageBox.Show("Ошибка SQL: " + sqlEx.Message + "\n\nПодробности: " + sqlEx.StackTrace);
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show("Ошибка отмены заказа: " + ex.Message);
+                }
+            }
+        }
+    }
+
+    private void comboBox1_SelectedIndexChanged(object sender, EventArgs e)
+    {
+        LoadOrders();
+    }
+
+    private void button2_Click(object sender, EventArgs e)
+    {
+        this.Close();
+    }
+}
+}
